@@ -35,7 +35,7 @@ RESOURCES="$STAGED/Contents/Resources"
 mkdir -p "$STAGED/Contents/MacOS" "$RESOURCES/vendor/divoom_minitoo_codex"
 
 swiftc -O -target "$ARCH-apple-macos$MIN_MACOS" Sources/Window.swift -o "$STAGED/Contents/MacOS/CodexMonitor"
-cp Sources/feed.py Sources/monitor_client.py Sources/claude_usage.py Sources/claude_statusline.py \
+cp Sources/feed.py Sources/monitor_client.py Sources/claude_usage.py Sources/claude_refresh.py Sources/claude_statusline.py \
   Scripts/connect_claude.py VERSION LICENSE THIRD_PARTY_NOTICES.md "$RESOURCES/"
 cp vendor/divoom_minitoo_codex/{__init__.py,appserver.py,LICENSE} "$RESOURCES/vendor/divoom_minitoo_codex/"
 cat > "$RESOURCES/BUILD_INFO.txt" <<INFO

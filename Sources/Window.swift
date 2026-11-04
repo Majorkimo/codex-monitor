@@ -1,10 +1,14 @@
 import AppKit
 import SwiftUI
 
-private let ink = Color(red: 0.91, green: 0.94, blue: 0.98)
-private let muted = Color(red: 0.53, green: 0.60, blue: 0.70)
-private let teal = Color(red: 0.28, green: 0.87, blue: 0.73)
-private let card = Color(red: 0.085, green: 0.11, blue: 0.15)
+// Semantic system colors only, so light, dark and increased-contrast settings are followed automatically.
+private let codexAccent = Color(nsColor: .systemBlue)
+private let claudeAccent = Color(nsColor: .systemOrange)
+private let warning = Color(nsColor: .systemOrange)
+private let critical = Color(nsColor: .systemRed)
+private let healthy = Color(nsColor: .systemGreen)
+private let cardFill = Color(nsColor: .controlBackgroundColor)
+private let hairline = Color(nsColor: .separatorColor)
 
 struct Quota: Identifiable {
     let id: String
@@ -33,7 +37,6 @@ final class MonitorState: ObservableObject {
     @Published var observedAt: Double?
     let provider: String
     var refresh: (() -> Void)?
-    var resize: (() -> Void)?
 
     // Each provider has its own state; values are never shared between the two panels.
     init(provider: String) {
@@ -48,7 +51,7 @@ final class MonitorState: ObservableObject {
         stale = result["stale"] as? Bool ?? false
         demo = result["demo"] as? Bool ?? false
         fatal = result["fatal"] as? Bool ?? false
-        refreshing = false
+        refreshing = result["refreshing"] as? Bool ?? false  // the Claude helper shows files first, then refreshes
         error = result["error"] as? String
         updatedAt = result["updatedAt"] as? Double
         if let windows = result["windows"] as? [[String: Any]] {
@@ -61,7 +64,6 @@ final class MonitorState: ObservableObject {
                 seen.insert(id)
                 return Quota(id: id, label: label, used: min(100, max(0, used)), reset: item["reset"] as? Double)
             }
-            resize?()
             plan = (result["plan"] as? String ?? (provider == "claude" ? "Claude" : "Codex")).capitalized
             available = result["available"] as? Bool ?? false
             notice = result["notice"] as? String
@@ -109,32 +111,90 @@ func balanceText(_ balance: String?) -> String {
     return formatter.string(from: NSDecimalNumber(decimal: number)) ?? "Unavailable"
 }
 
-struct QuotaCard: View {
-    let quota: Quota
-    var remaining: Int { max(0, 100 - quota.used) }
-    var accent: Color { remaining <= 10 ? Color(red: 1, green: 0.47, blue: 0.40) : remaining <= 25 ? Color.orange : teal }
+struct LimitBar: View {
+    let fraction: Double
+    let tint: Color
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(quota.label == "5H" ? "5-hour limit" : quota.label == "7D" ? "Weekly limit" : "Limit · \(quota.label)")
-                    .font(.system(size: 13, weight: .medium)).foregroundColor(ink)
-                Spacer()
-                Text("\(remaining)%").font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit().foregroundColor(accent)
-                Text("left").font(.system(size: 11)).foregroundColor(muted)
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color(nsColor: .quaternaryLabelColor))
+                Capsule().fill(tint).frame(width: max(0, geo.size.width * CGFloat(min(1, max(0, fraction)))))
             }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.07))
-                    Capsule().fill(accent).frame(width: geo.size.width * CGFloat(remaining) / 100)
-                }
-            }.frame(height: 6)
-            HStack {
-                Text("\(quota.used)% used")
+        }.frame(height: 6).accessibilityHidden(true)
+    }
+}
+
+// One limit window. A window the provider did not report says so; it is never drawn as 0% used or left.
+struct QuotaSection: View {
+    let title: String
+    let quota: Quota?
+    let accent: Color
+    private var remaining: Int { max(0, 100 - (quota?.used ?? 0)) }
+    private var tint: Color { remaining <= 10 ? critical : accent }
+    private var summary: String {
+        guard let quota = quota else { return "\(title): not reported" }
+        let reset = quota.reset == nil ? "reset time not reported" : "resets \(dateText(quota.reset))"
+        return "\(title): \(remaining) percent left, \(quota.used) percent used, \(reset)" + (remaining <= 10 ? ", low" : "")
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.subheadline.weight(.medium)).foregroundColor(.secondary)
                 Spacer()
-                Text("Reset \(dateText(quota.reset))")
-            }.font(.system(size: 10)).foregroundColor(muted)
-        }.padding(16).background(card).cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.045), lineWidth: 1))
+                if quota != nil && remaining <= 10 {
+                    Label("Low", systemImage: "exclamationmark.circle.fill").font(.caption.weight(.semibold)).foregroundColor(tint)
+                }
+            }
+            if let quota = quota {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text("\(remaining)%").font(.system(size: 34, weight: .semibold)).monospacedDigit()
+                    Text("left").font(.callout).foregroundColor(.secondary)
+                }.frame(height: 40, alignment: .leading)
+                LimitBar(fraction: Double(remaining) / 100, tint: tint)
+                HStack {
+                    Text("\(quota.used)% used")
+                    Spacer()
+                    Text(quota.reset == nil ? "Reset time not reported" : "Resets \(dateText(quota.reset))")
+                }.font(.caption).foregroundColor(.secondary)
+            } else {
+                Text("Not reported").font(.system(size: 22, weight: .semibold)).foregroundColor(.secondary)
+                    .frame(height: 40, alignment: .leading)
+                LimitBar(fraction: 0, tint: accent)
+                Text("This limit is not available right now.").font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(summary)
+    }
+}
+
+struct DetailRow: View {
+    let icon: String
+    let title: String
+    let value: String
+    var caption: String? = nil
+    var tip: String = ""
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: icon).font(.system(size: 14, weight: .medium)).foregroundColor(.secondary).frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+                if let caption = caption {
+                    Text(caption).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .layoutPriority(0)
+            Spacer(minLength: 8)
+            Text(value).font(.system(size: 15, weight: .semibold)).monospacedDigit()
+                .lineLimit(1).truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+        }
+        .padding(.vertical, 9)
+        .frame(minHeight: 58, alignment: .center)
+        .help(tip)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title): \(value)" + (caption.map { ", \($0)" } ?? ""))
     }
 }
 
@@ -147,134 +207,172 @@ struct Dashboard: View {
     @ObservedObject var controls: WindowControls
     @ObservedObject var codex: MonitorState
     @ObservedObject var claude: MonitorState
+    private var demo: Bool { codex.demo || claude.demo }
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Image(systemName: "chart.bar.xaxis").font(.system(size: 21, weight: .medium)).foregroundColor(teal)
-                    .frame(width: 42, height: 42).background(teal.opacity(0.10)).cornerRadius(12)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Codex & Claude").font(.system(size: 19, weight: .semibold)).foregroundColor(ink)
-                    Text(codex.demo || claude.demo ? "DEMO DATA · synthetic values, not your accounts" : "Usage limits at a glance")
-                        .font(.system(size: 11, weight: codex.demo || claude.demo ? .semibold : .regular))
-                        .foregroundColor(codex.demo || claude.demo ? Color.orange : muted)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Usage").font(.system(size: 26, weight: .bold))
+                    HStack(spacing: 8) {
+                        Text("Codex & Claude").font(.subheadline).foregroundColor(.secondary)
+                        if demo {
+                            Text("Demo data").font(.caption.weight(.semibold)).padding(.horizontal, 7).padding(.vertical, 2)
+                                .background(Capsule().fill(warning.opacity(0.22)))
+                                .help("Synthetic values, not your accounts")
+                        }
+                    }
                 }
                 Spacer()
                 Button { controls.pinned.toggle(); controls.pin?(controls.pinned) } label: {
-                    Image(systemName: controls.pinned ? "pin.fill" : "pin").font(.system(size: 13)).foregroundColor(controls.pinned ? teal : muted)
-                        .frame(width: 30, height: 30).background(Color.white.opacity(0.045)).cornerRadius(8)
-                }.buttonStyle(.plain).help("Keep window on top")
+                    Image(systemName: controls.pinned ? "pin.fill" : "pin").frame(width: 16, height: 16)
+                }
+                .buttonStyle(.bordered).controlSize(.regular)
+                .help(controls.pinned ? "Window stays on top. Click to let it go behind other windows." : "Keep window on top")
+                .accessibilityLabel("Keep window on top")
+                .accessibilityValue(controls.pinned ? "On" : "Off")
             }
             ScrollView(.vertical, showsIndicators: true) {
-                HStack(alignment: .top, spacing: 18) {
-                    ProviderPanel(state: codex)
-                    ProviderPanel(state: claude)
-                }
+                HStack(alignment: .top, spacing: 16) {
+                    ProviderCard(state: codex)
+                    ProviderCard(state: claude)
+                }.padding(.bottom, 2)
             }
-        }.padding(22).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(red: 0.045, green: 0.063, blue: 0.089)).colorScheme(.dark)
+        }
+        .padding(.horizontal, 20).padding(.top, 34).padding(.bottom, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
-struct ProviderPanel: View {
+struct ProviderCard: View {
     @ObservedObject var state: MonitorState
+    @State private var showInfo = false
     private var isClaude: Bool { state.provider == "claude" }
+    private var name: String { isClaude ? "Claude" : "Codex" }
+    private var accent: Color { isClaude ? claudeAccent : codexAccent }
     private var subtitle: String {
-        if state.demo { return "DEMO DATA · synthetic values" }
-        if isClaude {
-            if state.stale { return "STALE · last received snapshot" }
-            return state.available ? "\(state.sourceLabel ?? "Snapshot") · Claude Code usage" : "Claude Code · no usable snapshot"
-        }
-        if state.stale { return "STALE · last successful values" }
-        return "\(state.plan) · Account usage"
+        if state.demo { return "Demo data" }
+        if isClaude { return "Claude Code" }
+        return state.plan == "Codex" ? "ChatGPT account" : "\(state.plan) plan"
     }
+    private var isCurrent: Bool { isClaude ? (state.available && !state.stale) : state.live }
+    private var hasData: Bool { isClaude ? state.available : state.loaded && !state.quotas.isEmpty }
+    // Updated means a read succeeded at that time; it never claims continuous live data.
     private var statusText: String {
-        if state.refreshing { return "Refreshing..." }
+        if state.refreshing { return "Refreshing…" }
         if state.demo { return "Demo data · generated \(clockText(state.updatedAt))" }
         if isClaude {
-            if !state.available { return "No snapshot" }
-            let verb = state.sourceLabel == "Claude Code cache" ? "Cache updated" : "Snapshot received"
-            return "\(verb) \(state.stale ? dateText(state.observedAt) : clockText(state.observedAt))"
+            if !state.available { return "No usage available" }
+            return state.stale ? "Stale · last updated \(dateText(state.observedAt))" : "Updated \(clockText(state.observedAt))"
         }
-        if state.live { return "Live · updated \(clockText(state.updatedAt))" }
-        if state.stale { return "Stale · last success \(dateText(state.updatedAt))" }
+        if state.live { return "Updated \(clockText(state.updatedAt))" }
+        if state.stale { return "Stale · last updated \(dateText(state.updatedAt))" }
         return "Not connected"
     }
-    private var healthy: Bool { isClaude ? (state.available && !state.stale) : state.live }
-    private var footnote: String {
+    private var statusIcon: String {
+        if state.refreshing { return "arrow.triangle.2.circlepath" }
+        return isCurrent || state.demo ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+    private var problem: String? {
         if let error = state.error { return error }
-        if isClaude { return "Reads local Claude Code snapshots only; refresh does not query Claude · Local time (\(zoneLabel()))" }
-        return "Refreshes every 60 s · Times in local time (\(zoneLabel()))"
+        if isClaude && !state.available { return state.notice ?? (state.loaded ? "Claude Code has not reported usage limits." : nil) }
+        return nil
+    }
+    private func quota(_ label: String) -> Quota? { state.quotas.first(where: { $0.label == label }) }
+    private var extras: [Quota] { state.quotas.filter { $0.label != "5H" && $0.label != "7D" } }
+    private var infoText: String {
+        if isClaude {
+            return "Usage comes from Claude Code's own cache, advanced by its built-in /usage command (no prompt is sent), or from the optional status line snapshot. Times are shown in local time (\(zoneLabel()))."
+        }
+        return "Read from your signed-in Codex account every 60 seconds. Times are shown in local time (\(zoneLabel()))."
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(isClaude ? "Claude" : "Codex").font(.system(size: 16, weight: .semibold)).foregroundColor(ink)
-                Text(subtitle).font(.system(size: 11, weight: state.demo || state.stale ? .semibold : .regular))
-                    .foregroundColor(state.demo || state.stale ? Color.orange : muted)
-            }
-            if !isClaude {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("CREDIT BALANCE").font(.system(size: 10, weight: .semibold)).kerning(1.3).foregroundColor(muted)
-                    Spacer()
-                    Image(systemName: "circle.hexagongrid.fill").foregroundColor(teal.opacity(0.75))
+            HStack(spacing: 10) {
+                Image(systemName: isClaude ? "sparkles" : "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 15, weight: .semibold)).foregroundColor(accent)
+                    .frame(width: 32, height: 32)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(accent.opacity(0.16)))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name).font(.headline)
+                    Text(subtitle).font(.caption).foregroundColor(.secondary)
                 }
-                Text(state.unlimited ? "Unlimited" : balanceText(state.balance))
-                    .font(.system(size: state.balance == nil && !state.unlimited ? 25 : 36, weight: .semibold, design: .rounded))
-                    .monospacedDigit().foregroundColor(ink).lineLimit(1).minimumScaleFactor(0.5)
-                    .help(state.unlimited ? "" : state.balance.map { "Exact value from Codex: \($0)" } ?? "")
-                Text("Credits for additional Codex usage")
-                    .font(.system(size: 11)).foregroundColor(muted)
-            }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                .background(LinearGradient(colors: [Color(red: 0.08, green: 0.17, blue: 0.19), card], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .cornerRadius(16).overlay(RoundedRectangle(cornerRadius: 16).stroke(teal.opacity(0.16), lineWidth: 1))
-                .opacity(state.stale ? 0.55 : 1)
-            }
-            VStack(spacing: 10) {
-                ForEach(state.quotas) { QuotaCard(quota: $0) }
-                if !state.loaded {
-                    Text(state.error ?? "Loading limits...").font(.system(size: 12)).foregroundColor(muted).padding(16)
-                } else if state.quotas.isEmpty {
-                    Text(isClaude ? (state.notice ?? "Claude Code has not reported usage limits.") : "Codex did not report usage limits right now.")
-                        .font(.system(size: 12)).foregroundColor(muted).padding(16)
+                Spacer(minLength: 6)
+                Button { state.refreshing = true; state.refresh?() } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 14, height: 14)
                 }
+                .buttonStyle(.bordered).controlSize(.small).disabled(state.refreshing)
+                .help("Refresh \(name) usage now")
+                .accessibilityLabel("Refresh \(name) usage")
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: statusIcon).font(.caption.weight(.semibold))
+                    .foregroundColor(state.refreshing ? .secondary : (isCurrent || state.demo ? healthy : warning))
+                Text(statusText).font(.caption).foregroundColor(.primary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(name) status: \(statusText)")
+            Divider()
+            if !state.loaded && state.error == nil {
+                Text("Loading limits…").font(.subheadline).foregroundColor(.secondary).padding(.vertical, 8)
+            }
+            QuotaSection(title: "5-hour limit", quota: quota("5H"), accent: accent)
+            Divider()
+            QuotaSection(title: "Weekly limit", quota: quota("7D"), accent: accent)
+            ForEach(extras) { extra in
+                Divider()
+                QuotaSection(title: "Limit · \(extra.label)", quota: extra, accent: accent)
+            }
+            Divider()
+            VStack(spacing: 0) {
                 if isClaude {
-                    Text("Shows Claude Code usage snapshots (5-hour and weekly limits), not a live account query.")
-                        .font(.system(size: 10)).foregroundColor(muted.opacity(0.75)).frame(maxWidth: .infinity, alignment: .leading)
+                    DetailRow(icon: "externaldrive", title: "Source", value: state.sourceLabel ?? "None")
+                    Divider()
+                    DetailRow(icon: "clock", title: "Last observed", value: state.observedAt == nil ? "Not reported" : dateText(state.observedAt))
+                } else {
+                    DetailRow(icon: "creditcard", title: "Credit balance", value: state.unlimited ? "Unlimited" : balanceText(state.balance),
+                              caption: "For additional usage",
+                              tip: state.unlimited ? "" : state.balance.map { "Exact value from Codex: \($0)" } ?? "")
+                    Divider()
+                    DetailRow(icon: "arrow.counterclockwise", title: "Limit reset credits", value: state.resetCredits.map(String.init) ?? "Not reported",
+                              caption: state.resetExpiry == nil ? "Separate from credit balance" : "Next expiry \(dateText(state.resetExpiry))")
                 }
-            }.opacity(state.stale ? 0.55 : 1)
-            if !isClaude {
-            HStack(spacing: 12) {
-                Image(systemName: "arrow.counterclockwise").font(.system(size: 16, weight: .medium)).foregroundColor(muted)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Limit reset credits").font(.system(size: 12, weight: .medium)).foregroundColor(ink)
-                    Text(state.resetExpiry == nil ? "Separate from your credit balance" : "Next expiry \(dateText(state.resetExpiry))")
-                        .font(.system(size: 10)).foregroundColor(muted)
+            }
+            if let problem = problem {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundColor(warning).font(.caption)
+                    Text(problem).font(.caption).foregroundColor(.primary).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                 }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(warning.opacity(0.14)))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(name) problem: \(problem)")
+            }
+            HStack {
                 Spacer()
-                Text(state.resetCredits.map(String.init) ?? "N/A").font(.system(size: 25, weight: .semibold, design: .rounded)).foregroundColor(ink)
-            }.padding(14).background(card).cornerRadius(12)
-                .opacity(state.stale ? 0.55 : 1)
+                Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
+                    .buttonStyle(.borderless)
+                    .help("About this data")
+                    .accessibilityLabel("About \(name) data")
+                    .popover(isPresented: $showInfo) {
+                        Text(infoText).font(.callout).fixedSize(horizontal: false, vertical: true).frame(width: 260).padding(14)
+                    }
             }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 6) {
-                    Circle().fill(healthy ? teal : Color.orange).frame(width: 5, height: 5)
-                    Text(statusText)
-                        .font(.system(size: 10)).foregroundColor(muted)
-                    Spacer()
-                    Button { state.refreshing = true; state.refresh?() } label: {
-                        Image(systemName: "arrow.clockwise").foregroundColor(muted)
-                    }.buttonStyle(.plain).disabled(state.refreshing).help("Refresh now")
-                }
-                Text(footnote)
-                    .font(.system(size: 10)).foregroundColor(state.error == nil ? muted.opacity(0.75) : Color.orange)
-            }
-        }.frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(cardFill))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(hairline, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(name) usage")
     }
 }
 
 // Finder starts apps with a minimal PATH and no shell profile, so interpreter lookup is explicit.
-// CODEX_MONITOR_PYTHON, CODEX_BIN and CODEX_HOME are honored when set in the launching environment.
+// CODEX_MONITOR_PYTHON, CODEX_BIN, CODEX_HOME and CLAUDE_BIN are honored when set in the launching environment.
 func findPython() -> URL? {
     let files = FileManager.default
     let environment = ProcessInfo.processInfo.environment
@@ -357,7 +455,7 @@ final class FeedRunner {
         let process = Process()
         process.executableURL = python
         process.arguments = ["-B", resources.appendingPathComponent("feed.py").path, "--provider", state.provider] + (demo ? ["--demo"] : [])
-        var environment = ProcessInfo.processInfo.environment  // keeps CODEX_HOME / CODEX_BIN overrides
+        var environment = ProcessInfo.processInfo.environment  // keeps CODEX_HOME / CODEX_BIN / CLAUDE_BIN overrides
         let search = ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         environment["PATH"] = search.joined(separator: ":") + ":" + (environment["PATH"] ?? "")
         environment["PYTHONPATH"] = resources.appendingPathComponent("vendor").path
@@ -399,34 +497,24 @@ final class Monitor: NSObject, NSApplicationDelegate {
     let claude = MonitorState(provider: "claude")
     let controls = WindowControls()
     var runners: [FeedRunner] = []
-    static let width: CGFloat = 840
-    // Estimated content height of the taller panel; the panels scroll if the screen is shorter.
-    private func wantedHeight() -> CGFloat {
-        let codexHeight = 190 + 150 + 120 * CGFloat(max(1, codex.quotas.count)) + 120
-        let claudeHeight = 150 + 115 * CGFloat(max(1, claude.quotas.count)) + 60
-        return max(560, max(codexHeight, claudeHeight))
-    }
-    func resizeWindow() {
-        guard let window = window else { return }
-        let limit = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
-        let oldTop = window.frame.maxY
-        window.setContentSize(NSSize(width: Monitor.width, height: min(wantedHeight(), limit - 40)))
-        window.setFrameOrigin(NSPoint(x: window.frame.minX, y: oldTop - window.frame.height))
-    }
+    static let frameName = "CodexMonitorMainWindow"
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Monitor.width, height: 560), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = demo ? "Codex & Claude · Demo data" : "Codex & Claude"
+        // The size is chosen once; later polls never resize the window, so the user's width and height stay.
+        let screen = NSScreen.main?.visibleFrame.height ?? 900
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: min(640, screen - 60)),
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                          backing: .buffered, defer: false)
+        window.title = demo ? "Usage · Demo data" : "Usage"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(calibratedRed: 0.045, green: 0.063, blue: 0.089, alpha: 1)
         window.contentView = NSHostingView(rootView: Dashboard(controls: controls, codex: codex, claude: claude))
-        window.contentMinSize = NSSize(width: Monitor.width, height: 480)
+        window.contentMinSize = NSSize(width: 660, height: 380)
         window.level = .floating
         controls.pin = { [weak self] pinned in self?.window.level = pinned ? .floating : .normal }
         runners = [FeedRunner(state: codex, demo: demo), FeedRunner(state: claude, demo: demo)]
-        for state in [codex, claude] { state.resize = { [weak self] in self?.resizeWindow() } }
-        window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        resizeWindow()
+        if !window.setFrameUsingName(Monitor.frameName) { window.center() }
+        window.setFrameAutosaveName(Monitor.frameName)
+        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         runners.forEach { $0.startFeed() }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

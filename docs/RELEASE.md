@@ -2,7 +2,7 @@
 
 ## Plan: source first
 
-The first release (0.2.0) is prepared as **source only**: tag the repository and publish the source. No binary is published until it can be Developer ID signed and notarized, because an app downloaded without that may be blocked by Gatekeeper and users could have to override the block by hand.
+The first release (0.2.0, followed by 0.3.0) is prepared as **source only**: tag the repository and publish the source. No binary is published until it can be Developer ID signed and notarized, because an app downloaded without that may be blocked by Gatekeeper and users could have to override the block by hand.
 
 ## Before tagging
 
@@ -23,10 +23,12 @@ The first release (0.2.0) is prepared as **source only**: tag the repository and
    - Kill the `python3 … feed.py` helper from Activity Monitor: the previous values stay, dimmed and marked stale, with a fixed error message. Then click Refresh: the helper restarts and values return to live.
    - Authentication failures are covered by the automated tests with isolated synthetic fixtures. Do not sign out, quit Codex, or otherwise alter your real authentication to test this (quitting the desktop app does not invalidate CLI auth anyway).
    - Change the Mac's time zone: reset times and the footer label follow it.
-   - One window, no provider switch: Codex and Claude panels appear side by side (about 840 pt wide), each with its own heading, timestamp, error state and refresh. Codex balances and reset credits never appear in the Claude panel; `--demo` shows synthetic data in both panels. A failing or slow helper in one panel leaves the other unchanged; Refresh restarts only its own helper; the pin toggles the single window; quitting leaves no `feed.py` processes; the window scrolls rather than clips on a short screen.
-   - Claude with no snapshot shows the setup message; after `python3 Scripts/connect_claude.py` (dry run first, then `--apply` only on a settings file you have reviewed) and a Claude Code response, the 5-hour and weekly windows appear labelled "Snapshot received". Uninstall restores the settings. Do this against a copy (`--settings`, `--install-dir`) before touching real configuration.
+   - One window, no provider switch: Codex and Claude panels appear side by side (about 820 pt wide), each with its own heading, timestamp, error state and refresh. Codex balances and reset credits never appear in the Claude panel; `--demo` shows synthetic data in both panels. A failing or slow helper in one panel leaves the other unchanged; Refresh asks only its own running helper to refresh and restarts it only if it has died; the pin toggles the single window; quitting leaves no `feed.py` processes; the window scrolls rather than clips on a short screen.
+   - Claude with no snapshot shows the setup message; after `python3 Scripts/connect_claude.py` (dry run first, then `--apply` only on a settings file you have reviewed) and a Claude Code response, the 5-hour and weekly windows appear labelled "Statusline snapshot" (or "Claude Code cache" when the account-matched `~/.claude.json` cache is the source). Uninstall restores the settings. Do this against a copy (`--settings`, `--install-dir`) before touching real configuration.
    - The `~/.claude.json` compatibility cache is undocumented; recheck its shape against the current Claude Code before each release, and confirm the panel degrades to "unavailable" if it changed.
-   - The app bundle's `Resources` must contain `claude_usage.py`, `claude_statusline.py`, and `connect_claude.py`.
+   - Claude refresh (0.3.0; not run by automated tests, which use a fake CLI): with the official CLI and a trusted home folder, press the Claude refresh button and confirm the cache timestamp in `~/.claude.json` advances, the panel says "Updated", and no `claude` process remains afterwards. Try with the CLI hidden (`CLAUDE_BIN` pointing nowhere): stale values stay with a "not found" error. Record the CLI version and macOS you ran this on.
+   - UI: check light and dark appearance, the 660 pt minimum width, resizing (size persists across refreshes), and keyboard focus on the pin and refresh buttons.
+   - The app bundle's `Resources` must contain `claude_usage.py`, `claude_refresh.py`, `claude_statusline.py`, and `connect_claude.py`.
 5. Check `git status` shows no credentials, `auth.json`, or real account values in the tree or in any screenshots.
 
 ## Packaging (optional, for testing or a future binary release)
@@ -48,7 +50,7 @@ Nothing here signs or notarizes. The build uses no certificates, and the scripts
 
 - Do not attach the zip to a release without saying it is unsigned and not notarized.
 - The app is not verified on every macOS version from 12 onward; 12.0 is only the deployment target the Swift code is compiled for, and runtime verification on the oldest OS is a separate step. The compiler may apply an ad hoc signature, which is not a Developer ID signature.
-- Python 3.10+ and the Codex CLI or desktop app (for the Codex panel) are required on the user's Mac and are not bundled. The Claude panel needs only local Claude Code snapshots.
+- Python 3.10+ and the Codex CLI or desktop app (for the Codex panel) are required on the user's Mac and are not bundled. The Claude panel reads only local files (the status line snapshot and the account-matched `~/.claude.json` cache). Its refresh button runs the user's own installed Claude Code CLI (`/usage`, bounded, in a pseudo-terminal), so that CLI must be installed for refresh to work; the source preview makes no network requests of its own.
 
 ## CI
 

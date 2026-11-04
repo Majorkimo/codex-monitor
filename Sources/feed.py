@@ -301,15 +301,16 @@ class ClaudeMonitor(object):
     unusable the state says so and carries no windows.
     """
 
-    def __init__(self, reader, demo=False, clock=time.time):
+    def __init__(self, reader, demo=False, clock=time.time, refresh_reader=None):
         self.reader = reader
+        self.refresh_reader = refresh_reader  # optional: refreshes Claude Code's cache first
         self.demo = demo
         self.clock = clock
 
-    def poll(self):
+    def poll(self, refresh=True):
         now = int(self.clock())
         try:
-            data = self.reader(now)
+            data = (self.refresh_reader if refresh and self.refresh_reader else self.reader)(now)
         except Exception as exc:
             message = getattr(exc, 'user_message', None)
             state = {'provider': 'claude', 'live': False, 'stale': False, 'available': False,
@@ -320,6 +321,10 @@ class ClaudeMonitor(object):
                      'windows': data['windows'], 'source': data['source'],
                      'sourceLabel': data['sourceLabel'], 'observedAt': data['observedAt'],
                      'updatedAt': now}
+            if data.get('refreshed'):
+                state['refreshed'] = True
+            if isinstance(data.get('refreshError'), str):
+                state['error'] = data['refreshError']  # valid but possibly stale usage stays visible
         if self.demo:
             state['demo'] = True
         return state
@@ -369,7 +374,12 @@ def main(argv=None):
         if provider == 'claude':
             import claude_usage
             client = None
-            monitor = ClaudeMonitor(claude_usage.demo_usage if demo else claude_usage.read_usage, demo=demo)
+            refresher = None
+            if not demo and ('--once' not in args or '--refresh' in args):
+                import claude_refresh  # --once alone only reads existing files
+                refresher = claude_refresh.ClaudeRefresher()
+            monitor = ClaudeMonitor(claude_usage.demo_usage if demo else claude_usage.read_preferred,
+                                    demo=demo, refresh_reader=refresher)
         else:
             client = DemoClient() if demo else make_client()
             monitor = Monitor(client, demo=demo)
@@ -381,7 +391,15 @@ def main(argv=None):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
     try:
+        first = True
         while True:
+            if first and provider == 'claude' and getattr(monitor, 'refresh_reader', None):
+                # Show what is on disk right away (honestly stale if so); the bounded refresh follows.
+                early = monitor.poll(refresh=False)
+                early['provider'] = provider
+                early['refreshing'] = True
+                emit(early)
+            first = False
             state = monitor.poll()
             state['provider'] = provider
             emit(state)

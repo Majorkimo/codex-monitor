@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 (unreleased source preview)
+
+- **Claude refresh fix.** Refresh used to re-read cached files only, so Claude data could be hours old while the window looked current. The Claude helper now advances Claude Code's own usage cache by running the official CLI's built-in interactive `/usage` command (metadata only, no model prompt) on a pseudo terminal with fixed arguments `--safe-mode --tools "" --permission-mode dontAsk /usage`, in your home folder. It runs at launch, on manual refresh, and on the 60 second poll, but is skipped while the cache is 60 seconds old or less. At most 25 seconds; the whole process group is stopped on success, failure, timeout, SIGTERM and exit. Terminal output is discarded unread and never stored, nothing is typed into the CLI, and trust or sign-in prompts are never answered (they show as a timeout with guidance).
+- Success is decided only by the cache itself: account-matched, unexpired windows and a newer timestamp than before. Otherwise the previous valid usage stays visible, marked stale, with a fixed error (no CLI, unsupported CLI, timeout, no update). Another account's data and reset windows are never shown. A fresh cache wins over an older or unreadable status line snapshot; the status line remains the fallback when the CLI is unavailable.
+- CLI lookup: `CLAUDE_BIN` (authoritative when set), `claude` on `PATH`, then the official desktop installs under `~/Library/Application Support/Claude/claude-code/`, newest first; a CLI that rejects the safe arguments is skipped in favour of the next. `feed.py --once` still reads files only unless `--refresh` is added. Demo mode runs nothing.
+- **Redesigned window.** Native macOS look: adaptive light and dark system colors, SF Pro and SF Symbols, two material cards side by side (Codex blue, Claude orange accents), aligned 5-hour and weekly sections, "Not reported" for missing windows, credit balance and reset credits as distinct Codex-only details, per-provider status and refresh buttons, a shared pin control, a resizable window (minimum about 660 pt, default about 820 pt) that keeps your size across refreshes, and readable stale/error text instead of dimmed panels.
+- New tests with a fake CLI on a real pty (no real Claude Code is started).
+- `claude_refresh.py` is bundled by `build.sh`.
+
 ## 0.2.0 - 2026-11-04 (source preview)
 
 First public source preview.

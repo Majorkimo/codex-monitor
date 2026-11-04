@@ -10,8 +10,10 @@ A. The snapshot written by `claude_statusline.py`, which Claude Code runs as its
 B. Only when that file is absent: the undocumented `cachedUsageUtilization`
    entry in `~/.claude.json`, accepted only when its account id exactly matches
    `oauthAccount.accountUuid`. Everything else in that file is discarded.
+   `claude_refresh.py` can advance that cache through Claude Code's own
+   interactive /usage command; the result is read back through these validators.
 
-No network, no credentials, no Keychain, no running Claude, no log scanning.
+This module itself: no network, no credentials, no Keychain, no process, no log scanning.
 Unknown stays unknown: expired, malformed or missing windows are dropped, never
 shown as zero. Raw values and identities are never returned or logged.
 """
@@ -35,6 +37,8 @@ MSG_MISSING = 'No Claude usage snapshot yet. Open /usage in Claude Code, or conn
 MSG_EXPIRED = 'The last Claude usage snapshot has expired because its limit windows have reset. Use Claude Code, then refresh.'
 MSG_UNREADABLE = 'The Claude usage snapshot is unreadable. Use Claude Code or reconnect the status line; then refresh.'
 MSG_CACHE = 'The Claude Code usage cache is missing, in an unexpected format, or from another account. Connect the status line; then refresh.'
+MSG_MISMATCH = 'The Claude Code usage cache is from another account than the one signed in. Sign in to Claude Code with the account you want to watch, then refresh.'
+REASON_MISMATCH = 'account-mismatch'
 
 SOURCE_STATUSLINE = 'statusline'
 SOURCE_CACHE = 'cache'
@@ -45,9 +49,10 @@ WINDOWS = (('five_hour', '5H'), ('seven_day', '7D'))
 class ClaudeUnavailable(Exception):
     """No trustworthy usage; the message is fixed wording that is safe to show."""
 
-    def __init__(self, message):
+    def __init__(self, message, reason=None):
         Exception.__init__(self, message)
         self.user_message = message
+        self.reason = reason  # REASON_MISMATCH when the cache provably belongs to another account
 
 
 def snapshot_path(env=None):
@@ -191,6 +196,8 @@ def parse_cache(doc, now):
     if not isinstance(cache, dict) or not isinstance(account, dict):
         raise ClaudeUnavailable(MSG_CACHE)
     cached_id, account_id = cache.get('accountUuid'), account.get('accountUuid')
+    if isinstance(cached_id, str) and cached_id and isinstance(account_id, str) and account_id and cached_id != account_id:
+        raise ClaudeUnavailable(MSG_MISMATCH, REASON_MISMATCH)
     if not isinstance(cached_id, str) or not cached_id or cached_id != account_id:
         raise ClaudeUnavailable(MSG_CACHE)
     fetched = _number(cache.get('fetchedAtMs'))
@@ -222,7 +229,33 @@ def read_usage(now=None, env=None):
     except ValueError:
         raise ClaudeUnavailable(MSG_UNREADABLE)
     if doc is not _MISSING:
+        _reject_mismatch(now, env)  # a snapshot never hides an explicit account mismatch
         return parse_snapshot(doc, now)
+    return read_cache(now, env)
+
+
+def _reject_mismatch(now, env):
+    try:
+        read_cache(now, env)
+    except ClaudeUnavailable as exc:
+        if exc.reason == REASON_MISMATCH:
+            raise
+
+
+def read_preferred(now=None, env=None):
+    """Account-verified cache when valid, an explicit mismatch raises, else read_usage. Pure: no CLI."""
+    now = int(time.time() if now is None else now)
+    try:
+        return read_cache(now, env)
+    except ClaudeUnavailable as exc:
+        if exc.reason == REASON_MISMATCH:
+            raise
+    return read_usage(now, env)
+
+
+def read_cache(now=None, env=None):
+    """Return usage from the account-matched Claude Code cache only, or raise ClaudeUnavailable."""
+    now = int(time.time() if now is None else now)
     try:
         doc = _load(config_path(env), MAX_CONFIG_BYTES, follow_links=True)
     except ValueError:
